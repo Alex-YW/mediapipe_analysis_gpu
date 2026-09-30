@@ -3,3 +3,7 @@ numpy==1.26.4
 opencv-contrib-python==4.11.0.86
 requests==2.32.3
 runpod==1.7.6
+# RunPod 1.7.6 asks for fastapi[all] without an upper bound. Newer releases
+# pull OpenTelemetry/protobuf 5+, conflicting with MediaPipe's protobuf <5.
+fastapi==0.115.6
+fastapi-cli==0.0.7
