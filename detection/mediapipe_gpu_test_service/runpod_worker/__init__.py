@@ -1,0 +1,1 @@
+"""MediaPipe GPU validation worker."""
