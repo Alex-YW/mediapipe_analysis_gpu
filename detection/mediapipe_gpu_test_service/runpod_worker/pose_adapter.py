@@ -79,6 +79,8 @@ class TaskPoseEstimator:
         )
         # A GPU initialization error propagates; this test must never silently
         # become a CPU run. MediaPipe may still use CPU for non-inference work.
+        self._options = options
+        self._smoothing_alpha = smoothing_alpha
         self._landmarker = mp.tasks.vision.PoseLandmarker.create_from_options(options)
         self._visibility_threshold = visibility_threshold
         self._image_smoother = LandmarkSmoother(smoothing_alpha)
@@ -97,6 +99,24 @@ class TaskPoseEstimator:
 
     def close(self) -> None:
         self._landmarker.close()
+
+    def reset_interval(self) -> None:
+        self._landmarker.close()
+        self._landmarker = mp.tasks.vision.PoseLandmarker.create_from_options(self._options)
+        self._image_smoother.reset()
+        self._world_smoother.reset()
+        self._turn_world_smoother.reset()
+        self._anatomical_coherence = AnatomicalCoherenceDetector()
+
+    def process_excluded(self, timestamp_ms: int) -> PoseResult:
+        self._raw_records.write(json.dumps({
+            "frame_index": self._row_index, "timestamp_ms": timestamp_ms,
+            "raw_image": {}, "raw_world": {}, "image": {}, "world": {}, "turn_world": {},
+            "invalid_frame": True, "invalid_frame_reason": "excluded_view",
+            "analysis_status": "excluded_view",
+        }, separators=(",", ":")) + "\n")
+        self._row_index += 1
+        return PoseResult(invalid_frame=True, invalid_frame_reason="excluded_view")
 
     def process(self, bgr_frame: Any, timestamp_ms: int) -> PoseResult:
         rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
@@ -151,6 +171,7 @@ class TaskPoseEstimator:
                     "turn_world": _points(turn_world),
                     "invalid_frame": quality.invalid_frame,
                     "invalid_frame_reason": quality.reason,
+                    "analysis_status": "analyzed",
                 },
                 separators=(",", ":"),
                 allow_nan=False,

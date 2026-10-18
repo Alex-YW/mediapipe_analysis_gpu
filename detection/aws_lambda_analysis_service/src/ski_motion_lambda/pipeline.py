@@ -27,6 +27,7 @@ from .center_of_gravity import (
 from .condensed_angles import write_condensed_angles_csv
 from .geometry import ANGLE_NAMES, calculate_angles
 from .pose import PoseEstimator
+from .intervals import validate_intervals, interval_at, postprocess_intervals
 from .signal_smoothing import (
     SHOULDER_HIP_ROTATION_SMOOTHED_FIELD,
     write_smoothed_rotation_column,
@@ -82,6 +83,7 @@ def analyze_video(
     pipeline_queue_size: int = 4,
     processing_frame_rate: float = 30.0,
     decoder_threads: int = 0,
+    analysis_intervals: list[dict[str, Any]] | None = None,
 ) -> dict[str, object]:
     """Decode and infer concurrently, producing only reusable analysis artifacts."""
 
@@ -96,6 +98,9 @@ def analyze_video(
     pipeline_queue_size = validate_pipeline_queue_size(pipeline_queue_size)
     processing_frame_rate = validate_processing_frame_rate(processing_frame_rate)
     decoder_threads = validate_decoder_threads(decoder_threads)
+    if analysis_intervals is not None:
+        validate_intervals(analysis_intervals)
+    active_interval_id = None
 
     started = time.perf_counter()
     timings: dict[str, float] = {}
@@ -203,7 +208,17 @@ def analyze_video(
             last_timestamp = timestamp_ms
 
             stage = time.perf_counter()
-            pose = estimator.process(decoded.image, timestamp_ms)
+            interval = interval_at(analysis_intervals, timestamp_ms) if analysis_intervals is not None else None
+            if analysis_intervals is not None:
+                interval_id = interval["interval_id"] if interval else None
+                if interval_id is not None and interval_id != active_interval_id:
+                    estimator.reset_interval()
+                    knee_plane_distance_tracker = KneePlaneDistanceTracker()
+                active_interval_id = interval_id
+                pose = (estimator.process(decoded.image, timestamp_ms) if interval
+                        else estimator.process_excluded(timestamp_ms))
+            else:
+                pose = estimator.process(decoded.image, timestamp_ms)
             _add_timing(timings, "pose_inference", stage)
             if pose.raw_image:
                 pose_diagnostics["frames_with_raw_image_landmarks"] += 1
@@ -289,6 +304,7 @@ def analyze_video(
                 landmarks=manifest_landmarks,
                 angles=angles,
                 invalid_frame=pose.invalid_frame,
+                analysis_excluded=analysis_intervals is not None and interval is None,
             )
             _add_timing(timings, "overlay_manifest_write", stage)
             frame_count += 1
@@ -328,15 +344,16 @@ def analyze_video(
         angle_file.flush()
         angle_file.close()
         angle_file = None
-        write_smoothed_rotation_column(
-            angles_path,
-            sampling_rate_hz=effective_frame_rate,
-        )
+        if analysis_intervals is None:
+            write_smoothed_rotation_column(angles_path, sampling_rate_hz=effective_frame_rate)
         timings["angle_smoothing"] = time.perf_counter() - stage
 
         stage = time.perf_counter()
-        turn_report = write_turn_report(angles_path, turns_path)
-        write_outside_knee_plane_columns(angles_path, turn_report)
+        if analysis_intervals is None:
+            turn_report = write_turn_report(angles_path, turns_path)
+            write_outside_knee_plane_columns(angles_path, turn_report)
+        else:
+            turn_report = postprocess_intervals(angles_path, turns_path, analysis_intervals, effective_frame_rate)
         timings["turn_detection"] = time.perf_counter() - stage
 
         stage = time.perf_counter()

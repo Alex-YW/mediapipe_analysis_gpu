@@ -1,5 +1,25 @@
 # Isolated MediaPipe Heavy GPU test service
 
+## Optional ARCS interval route
+
+The legacy full-video test actions below remain available. The worker also
+accepts a versioned-source-bound `analysis_plan` supplied by the new AWS
+classifier/gate workflow. In that mode inference runs only inside accepted
+intervals, state resets at disconnected interval starts, and offline smoothing
+and turn detection run separately per interval. All sampled source frames
+remain in the artifacts; excluded metrics are blank and video frames labelled.
+
+Deploy a separate private coordinator with `INPUT_PREFIX=uploads` and
+`OUTPUT_PREFIX=results`; its production actions are `submit_arcs`,
+`status_arcs`, and `cancel_arcs`. Canonical outputs then use
+`results/{jobId}/`, not the old `gpu-tests/mpgpu-.../` layout. The classifier
+and policy gate live in the ARCS control-plane repository. The comprehensive
+local deployment guide is
+`/Users/aw/Desktop/ARCS/detection/docs/gemini-runpod-front-view-deployment.md`.
+Do not switch the old isolated submitter's prefixes to implement this route.
+
+The remainder of this README describes the unchanged legacy test workflow.
+
 This is a **test path**, alongside `rtmw3d_landmark_test_service`. It does not
 change the current AWS analysis or render Lambdas, the website control plane,
 or the production report path. An AWS Lambda submits and checks a RunPod

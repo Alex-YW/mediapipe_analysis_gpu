@@ -16,11 +16,13 @@ from contract import (
     JOB_TTL_MS,
     MAX_INPUT_BYTES,
     URL_EXPIRY_SECONDS,
+    validate_analysis_plan,
 )
 
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{8,100}$")
-_RUN_ID = re.compile(r"^mpgpu-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$")
+_RUN_ID = re.compile(r"^(mpgpu-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}|job_[A-Za-z0-9_-]{8,80})$")
+_JOB_ID = re.compile(r"^job_[A-Za-z0-9_-]{8,80}$")
 _HEX_SHA256 = re.compile(r"^[a-f0-9]{64}$")
 _MAX_RESPONSE_BYTES = 1024 * 1024
 
@@ -113,7 +115,7 @@ def _submit(event: dict, *, s3: Any, bucket: str, input_prefix: str,
     if type(frame_rate) not in (int, float) or not 1 <= frame_rate <= 60:
         raise ValueError("processing_frame_rate must be 1 through 60")
 
-    run_id = (
+    run_id = event["jobId"] if event.get("action") == "submit_arcs" else (
         "mpgpu-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         + "-" + uuid.uuid4().hex[:8]
     )
@@ -156,6 +158,14 @@ def _submit(event: dict, *, s3: Any, bucket: str, input_prefix: str,
             "ttl": JOB_TTL_MS,
         },
     }
+    if event.get("action") == "submit_arcs":
+        plan_ref = event["analysis_plan"]
+        if (plan_ref.get("bucket") != bucket or plan_ref.get("key") != run_prefix + "analysis-plan.json"
+                or not plan_ref.get("version_id")):
+            raise ValueError("analysis plan reference does not match job")
+        plan = json.loads(s3.get_object(Bucket=bucket, Key=plan_ref["key"],
+                                      VersionId=plan_ref["version_id"])["Body"].read())
+        request["input"]["analysis_plan"] = validate_analysis_plan(plan, source)
     result = runpod_request("POST", f"/v2/{endpoint_id}/run", api_key, request)
     job_id = result.get("id")
     if not isinstance(job_id, str) or not _ID.fullmatch(job_id):
@@ -231,9 +241,75 @@ def _status(event: dict, *, s3: Any, bucket: str, input_prefix: str,
         response["gpu"] = report["gpu"]
         response["frames"] = output.get("frames")
         response["model_api"] = output.get("model_api")
+        if event.get("action") == "status_arcs":
+            receipt = _read_optional(s3, bucket, run_prefix + "runpod-submission.json")
+            if not receipt or receipt.get("result", {}).get("job_id") != job_id:
+                raise ValueError("RunPod receipt does not match job")
+            if report["source"]["version_id"] != receipt["source_version_id"]:
+                raise ValueError("RunPod source differs from approved submission")
+            if (report["source"].get("bucket") != bucket or report["source"].get("key") not in {
+                    f"uploads/{run_id}/source.mov", f"uploads/{run_id}/source.mp4"}):
+                raise ValueError("RunPod source key differs from approved job")
+            plan_ref = receipt["analysis_plan"]
+            plan = json.loads(s3.get_object(Bucket=bucket, Key=plan_ref["key"],
+                                          VersionId=plan_ref["version_id"])["Body"].read())
+            if report.get("analysis", {}).get("analysis_plan") != plan:
+                raise ValueError("RunPod did not process the approved interval plan")
+            source = report["source"]
+            manifest = {"bucket": bucket, "key": run_prefix + "overlay-manifest.jsonl.gz"}
+            response["analysis"] = {"source": source, "outputs": {
+                "overlay_manifest": manifest,
+                "condensed_angles_csv": {"bucket": bucket, "key": run_prefix + "condensed_angles.csv"},
+            }}
+            response["render"] = {"source": source, "manifest": manifest,
+                                  "outputs": {"annotated_video": {"bucket": bucket, "key": run_prefix + "annotated.mp4"}}}
     elif status in {"FAILED", "TIMED_OUT", "CANCELLED"}:
         response["note"] = "Inspect RunPod job logs; signed URLs are not returned."
     return response
+
+
+def _read_optional(s3, bucket, key):
+    try:
+        return json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+    except Exception as error:
+        code = str(getattr(error, "response", {}).get("Error", {}).get("Code"))
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            return None
+        if code in {"403", "AccessDenied"}:
+            listed = s3.list_objects_v2(Bucket=bucket, Prefix=key, MaxKeys=1)
+            if not any(item["Key"] == key for item in listed.get("Contents", [])):
+                return None
+        raise
+
+
+def _submit_arcs(event, **arguments):
+    job_id = event.get("jobId", "")
+    if not _JOB_ID.fullmatch(job_id) or arguments["output_prefix"] != "results/":
+        raise ValueError("ARCS mode requires jobId and OUTPUT_PREFIX=results")
+    if event.get("input_key") not in {f"uploads/{job_id}/source.mov", f"uploads/{job_id}/source.mp4"}:
+        raise ValueError("ARCS source does not match job")
+    if not event.get("input_version_id") or not isinstance(event.get("analysis_plan"), dict):
+        raise ValueError("ARCS submission requires pinned source and approved plan")
+    s3, bucket = arguments["s3"], arguments["bucket"]
+    key = f"results/{job_id}/runpod-submission.json"
+    existing = _read_optional(s3, bucket, key)
+    identity = {"source_version_id": event["input_version_id"], "analysis_plan": event["analysis_plan"]}
+    if existing:
+        if any(existing.get(k) != v for k, v in identity.items()):
+            raise ValueError("submission identity changed")
+        if existing.get("state") != "SUBMITTED":
+            raise RuntimeError("SUBMISSION_UNCERTAIN: reconcile provider job before resubmission")
+        return existing["result"]
+    # Atomic claim prevents concurrent/retried submissions. An ambiguous remote
+    # POST is not automatically retried: it may already have created a GPU job.
+    s3.put_object(Bucket=bucket, Key=key, Body=json.dumps({"state": "SUBMITTING", **identity}).encode(),
+                  ContentType="application/json", IfNoneMatch="*")
+    result = _submit(event, **arguments)
+    result["status_event"]["action"] = "status_arcs"
+    s3.put_object(Bucket=bucket, Key=key,
+                  Body=json.dumps({"state": "SUBMITTED", **identity, "result": result}).encode(),
+                  ContentType="application/json")
+    return result
 
 
 def process(event: dict, *, s3: Any, secrets_client: Any,
@@ -260,6 +336,20 @@ def process(event: dict, *, s3: Any, secrets_client: Any,
         return _submit(event, **arguments)
     if event.get("action") == "status":
         return _status(event, **arguments)
+    if event.get("action") == "submit_arcs":
+        return _submit_arcs(event, **arguments)
+    if event.get("action") == "status_arcs":
+        if not str(event.get("run_id", "")).startswith("job_") or output_prefix != "results/":
+            raise ValueError("invalid ARCS status job")
+        return _status(event, **arguments)
+    if event.get("action") == "cancel_arcs":
+        run_id, job_id = event.get("run_id", ""), event.get("job_id", "")
+        if not _JOB_ID.fullmatch(run_id) or not _ID.fullmatch(job_id) or output_prefix != "results/":
+            raise ValueError("invalid ARCS cancellation")
+        receipt = _read_optional(s3, bucket, f"results/{run_id}/runpod-submission.json")
+        if not receipt or receipt.get("result", {}).get("job_id") != job_id:
+            raise ValueError("cancellation receipt mismatch")
+        return runpod_request("POST", f"/v2/{endpoint_id}/cancel/{job_id}", api_key)
     raise ValueError("action must be submit or status")
 
 

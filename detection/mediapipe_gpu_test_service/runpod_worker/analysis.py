@@ -84,6 +84,7 @@ def run_analysis(
     model_path: Path,
     source: dict[str, object],
     processing_frame_rate: float = 30.0,
+    analysis_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not model_path.is_file():
         raise FileNotFoundError(f"Pose model missing: {model_path}")
@@ -101,16 +102,32 @@ def run_analysis(
 
         with _ANALYSIS_LOCK:
             with patch.object(analysis_pipeline, "PoseEstimator", estimator_factory):
+                interval_arguments = ({"analysis_intervals": analysis_plan["intervals"]}
+                                      if analysis_plan is not None else {})
                 analysis = analysis_pipeline.analyze_video(
                     video,
                     output_dir,
                     source=source,
                     processing_frame_rate=processing_frame_rate,
+                    **interval_arguments,
                 )
 
     landmark_count = join_landmark_rows(
         raw_path, analysis["angles_csv"], output_dir / "landmarks.jsonl"
     )
+    if analysis_plan is not None:
+        with analysis["condensed_angles_csv"].open(newline="", encoding="utf-8") as metrics:
+            usable = any(
+                row.get("invalid_frame") == "false" and any(
+                    row.get(field) for field in (
+                        "torso_leg_lateral_angulation",
+                        "shoulder_hip_body_relative_rotation_difference_degrees",
+                        "lower_leg_asymmetry_deg",
+                    )
+                ) for row in csv.DictReader(metrics)
+            )
+        if not usable:
+            raise ValueError("accepted intervals produced no usable pose metrics")
     if landmark_count != analysis["frames"]:
         raise ValueError("landmark count differs from analyzed frames")
     manifest = read_overlay_manifest(analysis["overlay_manifest"])
@@ -128,6 +145,7 @@ def run_analysis(
         "model_sha256": sha256(model_path),
         "mediapipe_version": mp.__version__,
         "landmark_rows": landmark_count,
+        "analysis_plan": analysis_plan,
         "analysis": {
             key: str(value) if isinstance(value, Path) else value
             for key, value in analysis.items()

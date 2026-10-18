@@ -91,6 +91,7 @@ class OverlayManifestWriter:
         landmarks: Mapping[str, Point3D],
         angles: Mapping[str, float | None],
         invalid_frame: bool = False,
+        analysis_excluded: bool = False,
     ) -> None:
         self._ensure_open()
         if output_frame_index != self._frame_count:
@@ -122,6 +123,7 @@ class OverlayManifestWriter:
                 "source_frame_index": source_frame_index,
                 "timestamp_ms": timestamp_ms,
                 "invalid_frame": invalid_frame,
+                "analysis_excluded": analysis_excluded,
                 "landmarks": packed_landmarks,
                 "angles": packed_angles,
             }

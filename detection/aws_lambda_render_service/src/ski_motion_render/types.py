@@ -20,6 +20,7 @@ class ManifestFrame:
     landmarks: dict[str, Point3D]
     angles: dict[str, float | None]
     invalid_frame: bool = False
+    analysis_excluded: bool = False
 
 
 @dataclass(frozen=True, slots=True)

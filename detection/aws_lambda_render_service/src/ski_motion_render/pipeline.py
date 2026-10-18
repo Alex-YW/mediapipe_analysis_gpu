@@ -155,6 +155,11 @@ def render_video(
                     manifest_frame.timestamp_ms,
                 )
             )
+            if manifest_frame.analysis_excluded:
+                import cv2
+                annotated = decoded.image.copy()
+                cv2.putText(annotated, "Excluded from pose analysis", (20, 45),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
             timings["overlay_rendering"] = (
                 timings.get("overlay_rendering", 0.0)
                 + time.perf_counter()

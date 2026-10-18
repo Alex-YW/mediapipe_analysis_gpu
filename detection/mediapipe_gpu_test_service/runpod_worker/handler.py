@@ -13,14 +13,14 @@ from urllib.parse import urlsplit
 
 import requests
 
-from contract import ARTIFACTS, MAX_INPUT_BYTES
+from contract import ARTIFACTS, MAX_INPUT_BYTES, validate_analysis_plan
 from .analysis import run_analysis, sha256
 
 
 MODEL_PATH = Path(os.environ.get(
     "POSE_MODEL_PATH", "/opt/models/pose_landmarker_heavy.task"
 ))
-_RUN_ID = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
+_RUN_ID = re.compile(r"^[A-Za-z0-9_-]{8,100}$")
 
 
 def _s3_url(value: object) -> str:
@@ -54,6 +54,9 @@ def parse_payload(job: object) -> dict:
     if type(size) is not int or not 0 < size <= MAX_INPUT_BYTES:
         raise ValueError("invalid source size")
     frame_rate = data.get("processing_frame_rate", 30)
+    plan = data.get("analysis_plan")
+    if plan is not None:
+        validate_analysis_plan(plan, source)
     if type(frame_rate) not in (int, float) or not 1 <= frame_rate <= 60:
         raise ValueError("processing_frame_rate must be 1 through 60")
     put_urls = data.get("output_put_urls")
@@ -71,6 +74,7 @@ def parse_payload(job: object) -> dict:
         "video_get_url": _s3_url(data.get("video_get_url")),
         "source": source,
         "processing_frame_rate": float(frame_rate),
+        "analysis_plan": plan,
         "outputs": outputs,
     }
 
@@ -142,10 +146,13 @@ def handler(job: dict) -> dict:
         )
         download_seconds = time.perf_counter() - stage
         stage = time.perf_counter()
+        plan_arguments = ({"analysis_plan": payload["analysis_plan"]}
+                          if payload["analysis_plan"] is not None else {})
         analysis = run_analysis(
             video, root / "output", model_path=MODEL_PATH,
             source=payload["source"],
             processing_frame_rate=payload["processing_frame_rate"],
+            **plan_arguments,
         )
         processing_seconds = time.perf_counter() - stage
         output_dir = root / "output"

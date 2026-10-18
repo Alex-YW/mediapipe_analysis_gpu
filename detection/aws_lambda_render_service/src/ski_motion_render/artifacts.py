@@ -110,6 +110,9 @@ def read_overlay_manifest(path: Path) -> RenderManifest:
         invalid_frame = record.get("invalid_frame", False)
         if not isinstance(invalid_frame, bool):
             raise ValueError("manifest invalid_frame must be boolean")
+        analysis_excluded = record.get("analysis_excluded", False)
+        if not isinstance(analysis_excluded, bool):
+            raise ValueError("manifest analysis_excluded must be boolean")
         if not isinstance(packed_landmarks, list) or len(packed_landmarks) != len(
             landmark_order
         ):
@@ -145,6 +148,7 @@ def read_overlay_manifest(path: Path) -> RenderManifest:
                 landmarks=landmarks,
                 angles=angles,
                 invalid_frame=invalid_frame,
+                analysis_excluded=analysis_excluded,
             )
         )
         previous_source_index = source_index
