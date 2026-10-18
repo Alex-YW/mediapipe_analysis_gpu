@@ -2,6 +2,8 @@
 
 ## Optional ARCS interval route
 
+Updated 18th, Oct
+
 The legacy full-video test actions below remain available. The worker also
 accepts a versioned-source-bound `analysis_plan` supplied by the new AWS
 classifier/gate workflow. In that mode inference runs only inside accepted
@@ -19,6 +21,8 @@ local deployment guide is
 Do not switch the old isolated submitter's prefixes to implement this route.
 
 The remainder of this README describes the unchanged legacy test workflow.
+
+
 
 This is a **test path**, alongside `rtmw3d_landmark_test_service`. It does not
 change the current AWS analysis or render Lambdas, the website control plane,
@@ -38,15 +42,15 @@ utilization or speed proof; confirm the first run in RunPod logs/metrics.
 
 Each run writes `s3://BUCKET/OUTPUT_PREFIX/mpgpu-.../`:
 
-| File | Meaning |
-| --- | --- |
-| `landmarks.jsonl` | One row per analyzed frame; source-frame ID, timestamp, raw and smoothed image/world landmarks, turn-detection world landmarks, quality flag |
-| `angles.csv` | Existing Service 1 frame-level metric definitions |
-| `turns.json` | Existing Service 1 turn detector and turn schema |
-| `condensed_angles.csv` | Existing Service 1 condensed metric definitions |
-| `overlay-manifest.jsonl.gz` | Existing renderer input, useful for diagnostics |
-| `annotated.mp4` | H.264 visual verification video, with invalid-frame overlays omitted as in the current renderer |
-| `performance.json` | Source identity, GPU/model details, timings and SHA-256 checksums |
+| File                        | Meaning                                                                                                                                      |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `landmarks.jsonl`           | One row per analyzed frame; source-frame ID, timestamp, raw and smoothed image/world landmarks, turn-detection world landmarks, quality flag |
+| `angles.csv`                | Existing Service 1 frame-level metric definitions                                                                                            |
+| `turns.json`                | Existing Service 1 turn detector and turn schema                                                                                             |
+| `condensed_angles.csv`      | Existing Service 1 condensed metric definitions                                                                                              |
+| `overlay-manifest.jsonl.gz` | Existing renderer input, useful for diagnostics                                                                                              |
+| `annotated.mp4`             | H.264 visual verification video, with invalid-frame overlays omitted as in the current renderer                                              |
+| `performance.json`          | Source identity, GPU/model details, timings and SHA-256 checksums                                                                            |
 
 This preserves the *calculation definitions*, not an assertion that Heavy Tasks
 and the legacy MediaPipe Solutions Pose model yield interchangeable landmark
@@ -139,12 +143,14 @@ the Builds tab.
    and `mediapipe-gpu-test/output/`. Upload a short `.MOV` or `.mp4` test video
    under the input prefix. The test limit is 1 GiB. Do not put output under
    the input prefix.
+
 2. In AWS Secrets Manager, create a **plaintext** secret containing only the
    RunPod API key. Copy its ARN. If using a customer-managed KMS key, grant
    Lambda's role `kms:Decrypt` for that key.
+
 3. Create a Lambda execution role with basic CloudWatch Logs access and these
    additional permissions, substituting exact account, bucket and prefixes:
-
+   
    ```json
    {
      "Version": "2012-10-17",
@@ -167,7 +173,7 @@ the Builds tab.
      ]
    }
    ```
-
+   
    The Lambda role's S3 permissions authorize the presigned GET/PUT requests
    that the RunPod worker later makes. Check the bucket policy for any deny
    rules that might also affect presigned access (VPC-only access is a common
@@ -177,22 +183,24 @@ the Builds tab.
 ## 4. Create the AWS submit/status Lambda
 
 1. From the repository root, package only the coordinator code and shared contract:
-
+   
    ```bash
    cd detection/mediapipe_gpu_test_service
    zip -r /tmp/arcs-mediapipe-gpu-submit.zip aws_submitter contract.py \
      -x '*/__pycache__/*' '*.pyc'
    ```
-
+   
    If already in this directory, omit the `cd`. No third-party Python package
    is needed in the zip; use the AWS-managed Python 3.12 runtime with its
    included `boto3`/`botocore`.
+
 2. Create a Python 3.12 Lambda, upload the zip, set handler to
    `aws_submitter.lambda_function.lambda_handler`, attach the role above, set
    timeout to 30 seconds and memory to 256 MB. Keep it outside a private VPC
    unless that VPC has outbound access to RunPod, S3 and Secrets Manager.
-3. Set these environment variables:
 
+3. Set these environment variables:
+   
    ```text
    RUNPOD_ENDPOINT_ID=<endpoint ID>
    RUNPOD_SECRET_ARN=<plaintext secret ARN>
@@ -201,7 +209,7 @@ the Builds tab.
    INPUT_PREFIX=mediapipe-gpu-test/input
    OUTPUT_PREFIX=mediapipe-gpu-test/output
    ```
-
+   
    Prefixes may omit their trailing `/`; the Lambda normalizes them.
 
 ## 5. Submit, check, and inspect
